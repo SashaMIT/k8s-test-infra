@@ -75,6 +75,8 @@ const (
 
 	// nriDeviceAnnotation is the per-pod opt-in for device-node injection.
 	nriDeviceAnnotation = "nvml-mock.nvidia.com/devices"
+	// nriIBAnnotation is the per-pod opt-in for the mock InfiniBand tools.
+	nriIBAnnotation = "nvml-mock.nvidia.com/infiniband"
 )
 
 // Go port of docs/guides/node-wide-injection/run.sh. A dedicated Kind cluster
@@ -198,6 +200,24 @@ var _ = Describe("nvml-mock node-wide NRI injection", Label("nri"), Ordered, fun
 							tc.tool, nriMinimalImage, phase, logs)
 					}
 				}
+			})
+
+			// The IB tools share the overlay with the mock driver, and with no
+			// /dev/nvidiaN in the container mock NVML would otherwise report
+			// every GPU on the node.
+			It("shows no mock GPUs to an InfiniBand-only pod", Label("nri-ib-only"), func(ctx SpecContext) {
+				spec := nriAnyGPUNode(nriWorkload("nri-ib-only"), "")
+				spec.Annotations = map[string]string{nriIBAnnotation: "true"}
+				pod := applyNRIWorkload(ctx, h, spec.Render(), "nri-ib-only")
+
+				// The image ships no nvidia-smi, so this runs the staged one. It
+				// exits 0 with this message only when NVML loaded and reported
+				// zero devices; a load or init failure exits non-zero.
+				res, err := h.Kube.ExecSh(ctx, pod, `test "$MOCK_IB" = full && nvidia-smi -L`)
+				Expect(err).NotTo(HaveOccurred(),
+					"an InfiniBand-only pod should run with MOCK_IB=full and a working staged nvidia-smi:\n%s", res.Combined())
+				Expect(res.Combined()).To(ContainSubstring("No devices found"),
+					"an InfiniBand-only pod must see no mock GPUs:\n%s", res.Combined())
 			})
 
 			It("carries per-node ComputeDomain fabric identity through NRI", Label("compute-domain"), func(ctx SpecContext) {
@@ -546,6 +566,11 @@ var _ = Describe("nvml-mock node-wide NRI injection", Label("nri"), Ordered, fun
 
 			Expect(imexChannelNames(ctx, h, pod)).To(HaveLen(nriImexChannelCount),
 				"annotated pod should see all %d channels staged by imex.mockChannels", nriImexChannelCount)
+			// A channel is not a GPU: without the overlay, nothing in the pod
+			// can enumerate the node's mock GPUs.
+			res, err := h.Kube.ExecSh(ctx, pod, `test ! -e /opt/nvml-mock && test -z "${MOCK_NVML_CONFIG:-}"`)
+			Expect(err).NotTo(HaveOccurred(),
+				"an IMEX-only pod must receive the channels and no overlay or mock env:\n%s", res.Combined())
 		})
 
 		// The opt-in has to be a real gate. Without this, a plugin that injected
@@ -994,13 +1019,12 @@ func nriPlainPodManifest(name string) []byte {
 // point of using it. The label is what the spec selects on to read the pod's
 // logs, since it has already exited by the time they are collected.
 //
-// The IB tools and their libraries ship in the GPU overlay, so the pod opts
-// into it with the devices annotation; without it the tool path would not
-// exist.
+// The pod selects InfiniBand alone, which is also what proves the IB tools need
+// no GPU selection to load and enumerate.
 func nriMinimalIBPodManifest(name, tool string, args ...string) []byte {
 	spec := nriAnyGPUNode(nriWorkload(name), "")
 	spec.Image = nriMinimalImage
-	spec.Annotations = map[string]string{nriDeviceAnnotation: "true"}
+	spec.Annotations = map[string]string{nriIBAnnotation: "true"}
 	// Replaces the keepalive shell wholesale; this image has none, so the trap
 	// script would reach the tool as arguments.
 	spec.Command = append([]string{nriOverlayBinDir + "/" + tool}, args...)
