@@ -79,6 +79,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses the cap with NO_PERMISSION rather than reporting a success nothing
   would observe. Only the GPU-wide budget is modelled, so the `_v2` module,
   memory and base-GPU scopes decline rather than fold into the GPU limit.
+- NRI: the plugin no longer adjusts containers while the node agent is
+  restarting or rebuilding the staged driver tree. It leaves those containers
+  unmodified, logs a warning naming each one, and reports the reason on
+  `/readyz`. On Kubernetes 1.29 and later the node agent runs as a restartable
+  init container, so NRI starts only after the first staging and stops before
+  the agent tears the tree down; set `nri.nativeSidecar=false` where the
+  `SidecarContainers` feature gate is disabled. The node agent gains a
+  `/stagedz` endpoint, `--staging-lock-path` and
+  `nodeAgent.nriStartupTimeoutSeconds` (120 seconds); the plugin gains
+  `--agent-staged-url` and `--staging-lock-path`. The `-ibping` Service and
+  NetworkPolicy now target the relay port by number, which Kubernetes 1.29 to
+  1.31 need to reach a port declared on a restartable init container.
 
 ### Changed
 
